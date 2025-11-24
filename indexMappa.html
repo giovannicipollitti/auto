@@ -8,6 +8,10 @@
 <!-- jsPDF per esportare PDF -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 
+<!-- Leaflet (CDN) -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+
 <style>
   :root{
     --bg: linear-gradient(180deg,#072837,#01343a);
@@ -18,7 +22,7 @@
     --text:#eaf8ff;
   }
   html,body{height:100%;margin:0;font-family:Inter,Arial,Helvetica,sans-serif;background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased}
-  .wrap{max-width:760px;margin:12px auto;padding:12px;display:flex;flex-direction:column;gap:12px}
+  .wrap{max-width:980px;margin:12px auto;padding:12px;display:flex;flex-direction:column;gap:12px}
   .panel{background:linear-gradient(180deg,var(--panel),#021017);padding:12px;border-radius:12px;border:1px solid rgba(0,160,220,0.06);box-shadow:0 8px 30px rgba(0,0,0,0.6)}
   .topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
   .logo-area{display:flex;align-items:center;gap:10px}
@@ -43,7 +47,17 @@
   .footer{font-size:12px;color:var(--muted);text-align:center;margin-top:8px}
   .small{font-size:12px;color:var(--muted)}
   .controls-row{display:flex;gap:8px;align-items:center}
-  @media(min-width:900px){ .wrap{max-width:980px} .speed{font-size:110px} }
+
+  /* --- mini map (full-width bottom) --- */
+  .map-wrap{display:block}
+  .map-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+  #mapContainer{width:100%;height:260px;border-radius:12px;border:1px solid rgba(255,255,255,0.04);overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,0.6)}
+  #mapContainer .resizer{height:8px;cursor:ns-resize;background:linear-gradient(180deg,rgba(255,255,255,0.02),transparent);}
+  /* make the map wrapper resizable by dragging resizer element */
+  .map-controls{display:flex;gap:8px;align-items:center}
+  .map-info{font-size:12px;color:var(--muted)}
+
+  @media(min-width:900px){ .wrap{max-width:1100px} .speed{font-size:110px} }
 </style>
 </head>
 <body>
@@ -105,6 +119,22 @@
 
       <div class="footer">by Cipollitti Giovanni</div>
     </div>
+
+    <!-- MAP SECTION: full-width bottom, resizable -->
+    <div class="map-wrap panel" id="mapSection">
+      <div class="map-header">
+        <div style="font-weight:700">Mappa Tracciato</div>
+        <div class="map-controls">
+          <div class="map-info" id="mapInfo">Nessun punto</div>
+          <button id="clearMap" class="file-btn ghost">Svuota Tracciato</button>
+        </div>
+      </div>
+      <div id="mapContainer">
+        <div id="map" style="width:100%;height:100%"></div>
+        <div class="resizer" id="mapResizer" title="Trascina per ridimensionare"></div>
+      </div>
+    </div>
+
   </div>
 
 <script>
@@ -163,6 +193,7 @@ function updateStats(){
   avgEl.textContent = avg.toFixed(1);
   maxEl.textContent = Math.round(maxSpeed);
   positionsCountEl.textContent = `${positionsLog.length} posizioni`;
+  document.getElementById('mapInfo').textContent = `${positionsLog.length} punti`;
 }
 
 /* aggiorna velocità sul display */
@@ -212,6 +243,9 @@ function onPos(p){
   }
 
   updateSpeedDisplay(speedKmh);
+
+  // add point to map if initialized
+  try{ addPointToMap(lat, lon); } catch(e){ /* ignore */ }
 }
 
 /* error callback */
@@ -242,6 +276,7 @@ startBtn.addEventListener('click', ()=>{
   },1000);
   // reset stats
   totalMeters = 0; samples = []; maxSpeed = 0; positionsLog = []; lastPos = null;
+  clearMap();
   updateStats();
   startWatch();
   // bottoni
@@ -276,6 +311,7 @@ resetBtn.addEventListener('click', ()=>{
   startBtn.disabled = false;
   stopBtn.disabled = true;
   resetBtn.disabled = true;
+  clearMap();
 });
 
 /* ---------- Player MP3 (semplice) ---------- */
@@ -297,10 +333,10 @@ audioInput.addEventListener('change', ()=>{
 
 function renderTrack(item){
   const div = document.createElement('div'); div.className = 'track';
-  div.innerHTML = `<div style="max-width:70%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${item.name}</div>`+
+  div.innerHTML = `<div style=\"max-width:70%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap\">${item.name}</div>`+
                    `<div>`+
-                     `<button class="btn playBtn" data-url="${item.url}">Play</button>`+
-                     `<button class="btn ghost removeBtn" style="margin-left:6px">X</button>`+
+                     `<button class=\"btn playBtn\" data-url=\"${item.url}\">Play</button>`+
+                     `<button class=\"btn ghost removeBtn\" style=\"margin-left:6px\">X</button>`+
                    `</div>`;
   playlistEl.appendChild(div);
   div.querySelector('.playBtn').addEventListener('click', function(){
@@ -333,6 +369,65 @@ document.getElementById('clearPl').addEventListener('click', ()=>{
 audioEl.addEventListener('play', ()=> playerState.textContent = 'Playing');
 audioEl.addEventListener('pause', ()=> playerState.textContent = 'Paused');
 audioEl.addEventListener('ended', ()=> playerState.textContent = 'Idle');
+
+/* ---------- Map (Leaflet) ---------- */
+let map = null;
+let mapMarker = null;
+let mapPolyline = null;
+let mapPoints = [];
+const mapContainer = document.getElementById('map');
+
+function initMap(){
+  try{
+    map = L.map('map', {zoomControl:false, attributionControl:false}).setView([45.4642,9.19], 13);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
+    mapMarker = L.circleMarker([0,0],{radius:6,color:'#00aaff',fill:true,fillOpacity:1}).addTo(map);
+    mapPolyline = L.polyline([], {color:'#00aaff',weight:3,opacity:0.9}).addTo(map);
+  }catch(e){console.warn('Leaflet init failed',e);}
+}
+
+function addPointToMap(lat, lon){
+  if (!map) return;
+  const latlng = [lat, lon];
+  mapPoints.push(latlng);
+  mapPolyline.setLatLngs(mapPoints);
+  mapMarker.setLatLng(latlng);
+  if (mapPoints.length === 1) {
+    map.setView(latlng, 16);
+  } else {
+    map.panTo(latlng, {animate:true,duration:0.6});
+  }
+}
+
+function clearMap(){
+  mapPoints = [];
+  if (mapPolyline) mapPolyline.setLatLngs([]);
+  if (mapMarker) mapMarker.setLatLng([0,0]);
+  if (map) map.invalidateSize();
+  document.getElementById('mapInfo').textContent = '0 punti';
+}
+
+// resizer logic for the map container
+(function(){
+  const resizer = document.getElementById('mapResizer');
+  const container = document.getElementById('mapContainer');
+  let dragging = false;
+  let startY = 0;
+  let startH = 0;
+  resizer.addEventListener('mousedown', e => { dragging = true; startY = e.clientY; startH = container.offsetHeight; document.body.style.userSelect='none'; });
+  window.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const dy = startY - e.clientY; // invert so dragging up increases height
+    let newH = startH + dy;
+    newH = Math.max(120, Math.min(window.innerHeight - 120, newH));
+    container.style.height = newH + 'px';
+    if (map) map.invalidateSize();
+  });
+  window.addEventListener('mouseup', ()=>{ if (dragging){ dragging=false; document.body.style.userSelect='auto'; } });
+})();
+
+// clear map button
+document.getElementById('clearMap').addEventListener('click', ()=>{ if (!confirm('Svuotare il tracciato?')) return; clearMap(); });
 
 /* ---------- Export PDF e CSV ---------- */
 const { jsPDF } = window.jspdf;
@@ -373,7 +468,7 @@ document.getElementById('savePdf').addEventListener('click', async ()=>{
   doc.text(`Tempo: ${timeEl.textContent}`, 40, headerY + 134);
   doc.text(`Posizioni loggate: ${positionsLog.length}`, 40, headerY + 152);
 
-  // paginazione dati (prima 12 posizioni come esempio)
+  // paginazione dati (prima 200 posizioni come esempio)
   let y = headerY + 182;
   doc.setFontSize(9);
   doc.setTextColor(180,180,180);
@@ -414,17 +509,16 @@ function loadImage(src){
   });
 }
 
-document.getElementById('exportCsv').addEventListener('click', ()=>{
-  let csv = 'timestamp,lat,lon,speed_kmh\n';
-  positionsLog.forEach(p => csv += `${new Date(p.t).toISOString()},${p.lat},${p.lon},${p.speed}\n`);
-  const blob = new Blob([csv], {type: 'text/csv'});
-  const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'log.csv'; a.click(); URL.revokeObjectURL(url);
-});
-
-/* ---------- inizializza UI ---------- */
+/* ---------- inizializza UI & map on DOM ready ---------- */
 updateSpeedDisplay(0);
 updateStats();
 timeEl.textContent = '00:00:00';
+
+window.addEventListener('load', ()=>{
+  // init leaflet map after load to ensure container size is set
+  initMap();
+  if (map) map.invalidateSize();
+});
 </script>
 </body>
 </html>
