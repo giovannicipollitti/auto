@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+<title>Dashboard</title>
+
+<!-- jsPDF per esportare PDF -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+<style>
+  :root{
+    --bg:blue;
+    --panel:#071822;
+    --accent:#00aaff;
+    --muted:#9fb6c6;
+    --card: rgba(255,255,255,0.02);
+    --text:#eaf8ff;
+  }
+  html,body{height:100%;margin:0;font-family:Inter,Arial,Helvetica,sans-serif;background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased}
+  .wrap{max-width:460px;margin:12px auto;padding:12px;display:flex;flex-direction:column;gap:12px}
+  .panel{background:linear-gradient(180deg,var(--panel),#021017);padding:12px;border-radius:12px;border:1px solid rgba(0,160,220,0.06);box-shadow:0 8px 30px rgba(0,0,0,0.6)}
+  .speed{font-family: 'Orbitron', monospace; font-size:88px; text-align:center; color:var(--text); margin:6px 0}
+  .unit{font-size:14px;text-align:center;color:var(--muted);margin-bottom:6px}
+  .smallstats{display:flex;gap:8px;justify-content:space-between;margin-top:8px}
+  .stat{flex:1;background:var(--card);padding:10px;border-radius:8px;text-align:center;border:1px solid rgba(255,255,255,0.02)}
+  .stat .label{font-size:12px;color:var(--muted)}
+  .stat .val{font-size:18px;font-weight:700;color:var(--accent);margin-top:6px}
+  .controls{display:flex;gap:8px;margin-top:10px}
+  .btn{flex:1;padding:12px;border-radius:10px;border:none;background:linear-gradient(180deg,#08343c,#012024);color:var(--text);font-weight:700;cursor:pointer}
+  .btn.ghost{background:transparent;border:1px solid rgba(255,255,255,0.04)}
+  .btn.warn{background:linear-gradient(180deg,#5b0f0f,#3a0505)}
+  /* player */
+  .player{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+  .file-row{display:flex;gap:8px;align-items:center}
+  .file-btn{padding:8px 10px;border-radius:8px;background:linear-gradient(180deg,#032a31,#011417);border:1px solid rgba(0,160,220,0.06);cursor:pointer;color:var(--text)}
+  .playlist{display:flex;flex-direction:column;gap:6px;max-height:160px;overflow:auto;margin-top:6px}
+  .track{display:flex;justify-content:space-between;align-items:center;padding:8px;border-radius:8px;background:rgba(0,0,0,0.18)}
+  .footer{font-size:12px;color:var(--muted);text-align:center;margin-top:8px}
+  @media(min-width:600px){ .wrap{max-width:720px} .speed{font-size:110px} }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="panel">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div style="font-weight:700;font-size:15px">Dashboard</div>
+        <div style="font-size:12px;color:var(--muted)" id="status">Idle</div>
+      </div>
+
+      <div class="speed" id="speed">0</div>
+      <div class="unit">km/h</div>
+
+      <div class="smallstats">
+        <div class="stat"><div class="label">KM</div><div id="km" class="val">0.00</div></div>
+        <div class="stat"><div class="label">Media</div><div id="avg" class="val">0.0</div></div>
+        <div class="stat"><div class="label">Max</div><div id="max" class="val">0</div></div>
+      </div>
+
+      <div class="controls">
+        <button id="start" class="btn">START</button>
+        <button id="stop" class="btn ghost">STOP</button>
+        <button id="reset" class="btn warn">RESET</button>
+      </div>
+
+      <div style="margin-top:10px;font-size:13px;color:var(--muted)">Tempo: <span id="time">00:00:00</span></div>
+    </div>
+
+    <div class="panel player">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div style="font-weight:700">Player MP3</div>
+        <div style="font-size:12px;color:var(--muted)" id="playerState">Idle</div>
+      </div>
+
+      <div class="file-row">
+        <label class="file-btn">Carica MP3<input id="audioInput" type="file" accept="audio/*" multiple style="display:none"></label>
+        <button id="addUrl" class="file-btn">Aggiungi URL</button>
+        <button id="clearPl" class="file-btn">Svuota</button>
+      </div>
+
+      <div class="playlist" id="playlist"></div>
+
+      <audio id="audio" controls style="width:100%;margin-top:6px"></audio>
+
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button id="savePdf" class="btn">Salva report PDF</button>
+        <button id="exportCsv" class="btn ghost">Esporta CSV</button>
+      </div>
+
+      <div class="footer">by Cipollitti Giovanni</div>
+    </div>
+  </div>
+
+<script>
+/* ---------- Stato e variabili ---------- */
+let running = false;
+let watchId = null;
+let startTime = null;
+let elapsedTimer = null;
+let lastPos = null;
+let totalMeters = 0;
+let samples = []; // velocità campionate (km/h)
+let maxSpeed = 0;
+let positionsLog = []; // storico {t,lat,lon,speed}
+
+/* ---------- UI references ---------- */
+const speedEl = document.getElementById('speed');
+const kmEl = document.getElementById('km');
+const avgEl = document.getElementById('avg');
+const maxEl = document.getElementById('max');
+const timeEl = document.getElementById('time');
+const statusEl = document.getElementById('status');
+
+/* ---------- funzioni utili ---------- */
+function formatTime(ms){
+  const s = Math.floor(ms/1000);
+  const hh = String(Math.floor(s/3600)).padStart(2,'0');
+  const mm = String(Math.floor((s%3600)/60)).padStart(2,'0');
+  const ss = String(s%60).padStart(2,'0');
+  return `${hh}:${mm}:${ss}`;
+}
+function toKm(m){ return m/1000; }
+
+/* haversine (metri) */
+function haversine(a,b){
+  const R = 6371000;
+  const toRad = x => x * Math.PI/180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLon = toRad(b.lon - a.lon);
+  const la = toRad(a.lat), lb = toRad(b.lat);
+  const sin1 = Math.sin(dLat/2)*Math.sin(dLat/2) + Math.cos(la)*Math.cos(lb)*Math.sin(dLon/2)*Math.sin(dLon/2);
+  const c = 2*Math.atan2(Math.sqrt(sin1), Math.sqrt(1-sin1));
+  return R*c;
+}
+
+/* aggiorna UI statistica */
+function updateStats(){
+  const km = toKm(totalMeters);
+  kmEl.textContent = km.toFixed(2);
+  const avg = samples.length ? (samples.reduce((a,b)=>a+b,0)/samples.length) : 0;
+  avgEl.textContent = avg.toFixed(1);
+  maxEl.textContent = Math.round(maxSpeed);
+}
+
+/* aggiorna velocità sul display */
+function updateSpeedDisplay(v){
+  // v in km/h
+  speedEl.textContent = (Math.round(v*10)/10).toString();
+}
+
+/* ---------- GPS handling ---------- */
+function onPos(p){
+  const lat = p.coords.latitude;
+  const lon = p.coords.longitude;
+  const s = p.coords.speed; // m/s or null
+  const t = Date.now();
+
+  let speedKmh = 0;
+  if (s !== null && !isNaN(s)) speedKmh = s*3.6;
+  // else if no speed available we can estimate from lastPos later
+
+  // log position
+  positionsLog.push({t, lat, lon, speed: speedKmh});
+
+  // compute distance
+  if (running && lastPos){
+    const d = haversine(lastPos, {lat,lon});
+    if (d > 0.5) totalMeters += d; // ignore tiny jitter
+  }
+
+  lastPos = {lat,lon,t};
+
+  // record sample if running
+  if (running){
+    const sampleSpeed = speedKmh || (samples.length ? samples[samples.length-1] : 0);
+    samples.push(sampleSpeed);
+    if (sampleSpeed > maxSpeed) maxSpeed = sampleSpeed;
+    updateStats();
+  }
+
+  updateSpeedDisplay(speedKmh);
+}
+
+/* error callback */
+function onErr(e){
+  console.warn('GPS error', e);
+  statusEl.textContent = 'GPS error';
+}
+
+/* start/stop watchPosition */
+function startWatch(){
+  if (!('geolocation' in navigator)) { alert('Geolocation non supportata'); return; }
+  if (watchId !== null) return;
+  watchId = navigator.geolocation.watchPosition(onPos, onErr, {enableHighAccuracy:true, maximumAge:500, timeout:10000});
+}
+function stopWatch(){
+  if (watchId !== null){ navigator.geolocation.clearWatch(watchId); watchId = null; }
+}
+
+/* ---------- controlli Start / Stop / Reset ---------- */
+document.getElementById('start').addEventListener('click', ()=>{
+  if (running) return;
+  running = true;
+  statusEl.textContent = 'Recording';
+  startTime = Date.now();
+  elapsedTimer = setInterval(()=> {
+    timeEl.textContent = formatTime(Date.now()-startTime);
+  },1000);
+  // reset stats
+  totalMeters = 0; samples = []; maxSpeed = 0; positionsLog = []; lastPos = null;
+  startWatch();
+});
+
+document.getElementById('stop').addEventListener('click', ()=>{
+  if (!running) return;
+  running = false;
+  statusEl.textContent = 'Stopped';
+  clearInterval(elapsedTimer);
+  stopWatch();
+  updateStats();
+  alert('Viaggio fermato. Puoi salvare il report in PDF.');
+});
+
+document.getElementById('reset').addEventListener('click', ()=>{
+  if (!confirm('Azzerare tutti i dati?')) return;
+  running = false;
+  statusEl.textContent = 'Idle';
+  clearInterval(elapsedTimer);
+  stopWatch();
+  startTime = null; totalMeters = 0; samples = []; maxSpeed = 0; positionsLog = []; lastPos = null;
+  timeEl.textContent = '00:00:00';
+  updateSpeedDisplay(0); updateStats();
+});
+
+/* ---------- Player MP3 (semplice) ---------- */
+const audioInput = document.getElementById('audioInput');
+const playlistEl = document.getElementById('playlist');
+const audioEl = document.getElementById('audio');
+const playerState = document.getElementById('playerState');
+let playlist = [];
+
+audioInput.addEventListener('change', ()=>{
+  const files = Array.from(audioInput.files);
+  files.forEach(f => {
+    const url = URL.createObjectURL(f);
+    const item = {name: f.name, url};
+    playlist.push(item);
+    renderTrack(item);
+  });
+});
+
+function renderTrack(item){
+  const div = document.createElement('div'); div.className = 'track';
+  div.innerHTML = `<div style="max-width:70%">${item.name}</div><div><button class="btn playBtn" data-url="${item.url}">Play</button></div>`;
+  playlistEl.appendChild(div);
+  div.querySelector('button').addEventListener('click', function(){
+    audioEl.src = this.dataset.url;
+    audioEl.play();
+  });
+}
+
+document.getElementById('addUrl').addEventListener('click', ()=>{
+  const url = prompt('Inserisci URL MP3 (http/https)');
+  if (!url) return;
+  const name = url.split('/').pop().split('?')[0];
+  const item = {name: name || 'track', url};
+  playlist.push(item);
+  renderTrack(item);
+});
+
+document.getElementById('clearPl').addEventListener('click', ()=>{
+  if (!confirm('Svuotare playlist?')) return;
+  playlist = []; playlistEl.innerHTML = ''; audioEl.pause(); audioEl.src = ''; playerState.textContent = 'Idle';
+});
+
+audioEl.addEventListener('play', ()=> playerState.textContent = 'Playing');
+audioEl.addEventListener('pause', ()=> playerState.textContent = 'Paused');
+audioEl.addEventListener('ended', ()=> playerState.textContent = 'Idle');
+
+/* ---------- Export PDF e CSV ---------- */
+const { jsPDF } = window.jspdf;
+
+document.getElementById('savePdf').addEventListener('click', ()=>{
+  const doc = new jsPDF();
+  doc.setFontSize(16); doc.setTextColor(10,150,200);
+  doc.text('Report Viaggio', 14, 20);
+  doc.setFontSize(11); doc.setTextColor(0,0,0);
+  const startStr = startTime ? new Date(startTime).toLocaleString() : '--';
+  const endStr = (!running && startTime) ? new Date().toLocaleString() : (running ? 'in corso' : '--');
+  doc.text(`Inizio: ${startStr}`, 14, 36);
+  doc.text(`Fine: ${endStr}`, 14, 44);
+  doc.text(`KM percorsi: ${kmEl.textContent} km`, 14, 52);
+  doc.text(`Vel. media: ${avgEl.textContent} km/h`, 14, 60);
+  doc.text(`Vel. max: ${maxEl.textContent} km/h`, 14, 68);
+  doc.text(`Tempo: ${timeEl.textContent}`, 14, 76);
+  doc.text('Generated by Cruscotto Minimal', 14, 92);
+  doc.save(`report_${new Date().toISOString().replace(/[:.]/g,'-')}.pdf`);
+});
+
+document.getElementById('exportCsv').addEventListener('click', ()=>{
+  let csv = 'timestamp,lat,lon,speed_kmh\\n';
+  positionsLog.forEach(p => csv += `${new Date(p.t).toISOString()},${p.lat},${p.lon},${p.speed}\\n`);
+  const blob = new Blob([csv], {type: 'text/csv'});
+  const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'log.csv'; a.click(); URL.revokeObjectURL(url);
+});
+
+/* ---------- inizializza UI ---------- */
+updateSpeedDisplay(0);
+updateStats();
+timeEl.textContent = '00:00:00';
+</script>
+</body>
+</html>
